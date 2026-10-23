@@ -1,4 +1,3 @@
-
 name: Build Residency Visual Reader APK
 
 on:
@@ -53,6 +52,65 @@ jobs:
           test -f "$PROJECT_DIR/app/build.gradle.kts"
 
           echo "ANDROID_PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Fix mobile sidebar scrolling for Android WebView
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          asset = Path("project-source/ResidencyVisualReaderAndroid/app/src/main/assets/index.html")
+          html = asset.read_text(encoding="utf-8")
+          marker = "Android WebView mobile navigation scroll fix"
+          if marker in html:
+              print("Mobile sidebar scrolling fix is already present.")
+              raise SystemExit(0)
+
+          closing_style = "</style>"
+          if closing_style not in html:
+              raise SystemExit("Could not find the closing style tag in index.html.")
+
+          css = r"""
+          /* Android WebView mobile navigation scroll fix */
+          @media (max-width:760px), (max-width:950px) and (max-height:600px) and (orientation:landscape) {
+            #study-sidebar {
+              display:flex !important;
+              flex-direction:column !important;
+              position:fixed !important;
+              top:var(--topbar-height) !important;
+              bottom:auto !important;
+              height:calc(100vh - var(--topbar-height)) !important;
+              max-height:calc(100vh - var(--topbar-height)) !important;
+              min-height:0 !important;
+              overflow:hidden !important;
+            }
+            #nav-tree {
+              display:block;
+              flex:1 1 auto !important;
+              min-height:0 !important;
+              max-height:100% !important;
+              overflow-y:scroll !important;
+              overflow-x:hidden !important;
+              -webkit-overflow-scrolling:touch;
+              overscroll-behavior-y:contain;
+              touch-action:pan-y;
+              scrollbar-width:thin;
+            }
+          }
+          @supports (height:100dvh) {
+            @media (max-width:760px), (max-width:950px) and (max-height:600px) and (orientation:landscape) {
+              #study-sidebar {
+                height:calc(100dvh - var(--topbar-height)) !important;
+                max-height:calc(100dvh - var(--topbar-height)) !important;
+              }
+            }
+          }
+          """
+          html = html.replace(closing_style, css + "\n" + closing_style, 1)
+          asset.write_text(html, encoding="utf-8")
+          print("Added dedicated touch-scroll area for the mobile topic tree.")
+          PY
 
       - name: Build debug APK
         run: |
