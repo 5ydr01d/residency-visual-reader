@@ -112,6 +112,181 @@ jobs:
           print("Added dedicated touch-scroll area for the mobile topic tree.")
           PY
 
+      - name: Improve reading text controls and portrait table layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          from pathlib import Path
+
+          asset = Path("project-source/ResidencyVisualReaderAndroid/app/src/main/assets/index.html")
+          html = asset.read_text(encoding="utf-8")
+          marker = "Residency Visual Reader reading comfort controls"
+          if marker in html:
+              print("Reading comfort fix is already present.")
+              raise SystemExit(0)
+
+          # Make the controls reachable on phones, while keeping the existing desktop controls.
+          focus_button = '<button id="focus-toggle" class="tool-btn" type="button">Focus mode</button>'
+          if focus_button not in html:
+              raise SystemExit("Could not find the reader toolbar insertion point.")
+          controls = focus_button + """
+          <div id="text-size-controls" class="text-size-controls" role="group" aria-label="Reading text size">
+            <span class="text-size-label">Text size</span>
+            <button id="reader-font-down" class="tool-btn" type="button" aria-label="Decrease reading text size">A−</button>
+            <output id="reader-font-value" aria-live="polite">17 px</output>
+            <button id="reader-font-up" class="tool-btn" type="button" aria-label="Increase reading text size">A+</button>
+            <button id="reader-font-reset" class="tool-btn" type="button" aria-label="Reset reading text size">Reset</button>
+          </div>"""
+          html = html.replace(focus_button, controls, 1)
+
+          closing_style = "</style>"
+          if closing_style not in html:
+              raise SystemExit("Could not find the closing style tag in index.html.")
+
+          css = r"""
+          /* Residency Visual Reader reading comfort controls */
+          :root {
+            --body-size:17px;
+            --reader-text-size:17px;
+            --reader-table-size:14px;
+            --reader-table-head-size:12px;
+          }
+          #study-content p,
+          #study-content li,
+          #study-content blockquote,
+          #study-content dd,
+          #study-content dt {
+            font-size:var(--reader-text-size) !important;
+          }
+          #study-content .table-scroll table {
+            font-size:var(--reader-table-size) !important;
+          }
+          #study-content .table-scroll th,
+          #study-content .table-scroll td {
+            font-size:var(--reader-table-size) !important;
+          }
+          #study-content .table-scroll thead th {
+            font-size:var(--reader-table-head-size) !important;
+          }
+          #study-content .table-scroll p,
+          #study-content .table-scroll li,
+          #study-content .table-scroll blockquote {
+            font-size:var(--reader-table-size) !important;
+          }
+          .text-size-controls {
+            display:none;
+            width:100%;
+            flex:1 0 100%;
+            align-items:center;
+            justify-content:flex-start;
+            flex-wrap:wrap;
+            gap:7px;
+            padding-top:3px;
+          }
+          .text-size-label {
+            color:var(--muted);
+            font-size:13px;
+            font-weight:800;
+            margin-right:2px;
+          }
+          .text-size-controls .tool-btn {
+            min-width:44px;
+            min-height:42px;
+            padding:8px 12px;
+            font-size:15px;
+            touch-action:manipulation;
+          }
+          #reader-font-value {
+            min-width:48px;
+            text-align:center;
+            font-size:13px;
+            font-weight:800;
+            color:var(--ink);
+            font-variant-numeric:tabular-nums;
+          }
+          /* Fit simple comparison tables to the phone width; keep complex tables swipeable. */
+          @media (max-width:760px), (max-width:950px) and (max-height:600px) and (orientation:landscape) {
+            .text-size-controls { display:flex; }
+            .table-scroll[data-fit-mobile="true"] {
+              width:100%;
+              max-width:100%;
+              overflow-x:hidden !important;
+            }
+            .table-scroll[data-fit-mobile="true"] > table {
+              width:100% !important;
+              max-width:100% !important;
+              min-width:0 !important;
+              table-layout:fixed !important;
+            }
+            .table-scroll[data-fit-mobile="true"] th,
+            .table-scroll[data-fit-mobile="true"] td {
+              min-width:0 !important;
+              padding:8px 6px;
+              overflow-wrap:anywhere;
+              word-break:normal;
+            }
+            .table-scroll[data-fit-mobile="true"] thead th {
+              position:static;
+            }
+          }
+          """
+          html = html.replace(closing_style, css + "\n" + closing_style, 1)
+
+          # Add a mobile-fit marker only to tables with at most three logical columns.
+          # Wider, more complex tables keep their horizontal swipe behavior.
+          script_anchor = " const content=$('#study-content');"
+          if script_anchor not in html:
+              raise SystemExit("Could not locate the study-content initialization in the script.")
+          table_marker_script = r"""
+          // Mark simple tables so CSS can use the full phone width without a forced 560px minimum.
+          $$('.table-scroll', content).forEach(wrapper => {
+            const table = wrapper.querySelector('table');
+            if (!table) return;
+            const counts = Array.from(table.rows).map(row =>
+              Array.from(row.cells).reduce((sum, cell) => sum + Math.max(1, cell.colSpan || 1), 0)
+            );
+            const columns = counts.length ? Math.max(...counts) : 0;
+            wrapper.dataset.fitMobile = columns > 0 && columns <= 3 ? 'true' : 'false';
+          });
+          """
+          html = html.replace(script_anchor, script_anchor + "\n" + table_marker_script, 1)
+
+          # Persist font size and connect both the mobile controls and existing desktop A−/A+ buttons.
+          print_anchor = " $('#print-btn').addEventListener('click',()=>window.print());"
+          if print_anchor not in html:
+              raise SystemExit("Could not locate the print button listener in the script.")
+          size_script = r"""
+          // Reading text size: persistent across app launches, adjustable from 15px to 24px.
+          let readerFontSize = 17;
+          try {
+            const savedSize = Number(localStorage.getItem('rv-reader-text-size'));
+            if (Number.isFinite(savedSize) && savedSize >= 15 && savedSize <= 24) readerFontSize = savedSize;
+          } catch (_) {}
+          function applyReaderFontSize(value, save = true) {
+            readerFontSize = Math.max(15, Math.min(24, Math.round(value)));
+            const tableSize = Math.max(13, Math.round(readerFontSize * 0.82));
+            root.style.setProperty('--body-size', readerFontSize + 'px');
+            root.style.setProperty('--reader-text-size', readerFontSize + 'px');
+            root.style.setProperty('--reader-table-size', tableSize + 'px');
+            root.style.setProperty('--reader-table-head-size', Math.max(11, tableSize - 2) + 'px');
+            const label = $('#reader-font-value');
+            if (label) label.textContent = readerFontSize + ' px';
+            if (save) { try { localStorage.setItem('rv-reader-text-size', String(readerFontSize)); } catch (_) {} }
+          }
+          applyReaderFontSize(readerFontSize, false);
+          $('#reader-font-down').addEventListener('click', () => applyReaderFontSize(readerFontSize - 1));
+          $('#reader-font-up').addEventListener('click', () => applyReaderFontSize(readerFontSize + 1));
+          $('#reader-font-reset').addEventListener('click', () => applyReaderFontSize(17));
+          $('#font-smaller').addEventListener('click', () => applyReaderFontSize(readerFontSize - 1));
+          $('#font-larger').addEventListener('click', () => applyReaderFontSize(readerFontSize + 1));
+          """
+          html = html.replace(print_anchor, size_script + "\n" + print_anchor, 1)
+
+          asset.write_text(html, encoding="utf-8")
+          print("Added persistent font controls and mobile fitting for simple tables.")
+          PYTHON
+
       - name: Build debug APK
         run: |
           gradle --no-daemon \
